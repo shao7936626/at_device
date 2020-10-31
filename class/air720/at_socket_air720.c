@@ -622,7 +622,8 @@ static void urc_sim_removed_func(struct at_client *client, const char *data, rt_
         LOG_E("get air720 device by client name(%s) failed.", client_name);
         return;
     }
-	device->class->device_ops->control(device,AT_DEVICE_CTRL_REBOOT,RT_NULL);
+	at_device_control(device,AT_DEVICE_CTRL_REBOOT,RT_NULL);
+	//device->class->device_ops->control(device,AT_DEVICE_CTRL_REBOOT,RT_NULL);
 
 }
 
