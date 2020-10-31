@@ -1,5 +1,5 @@
 /*
- * File      : at_socket_sim800c.c
+ * File      : at_socket_l610.c
  * This file is part of RT-Thread RTOS
  * COPYRIGHT (C) 2006 - 2018, RT-Thread Development Team
  *
@@ -19,90 +19,250 @@
  *
  * Change Logs:
  * Date           Author       Notes
- * 2018-06-12     malongwei    first version
- * 2019-05-13     chenyong     multi AT socket client support
- * 2020-07-24     awenchen     fix the stack overflow when parse cops
+ * 2020-10-28     zhangyang    first version
  */
+
 
 #include <stdio.h>
 #include <string.h>
 #include <ctype.h>
 
-#include <at_device_sim800c.h>
+#include <at_device_l610.h>
 
-#define LOG_TAG                        "at.dev.sim800"
+#define LOG_TAG                     "at.dev.l610"
 #include <at_log.h>
 
-#ifdef AT_DEVICE_USING_SIM800C
 
-#define SIM800C_WAIT_CONNECT_TIME      5000
-#define SIM800C_THREAD_STACK_SIZE      2048
-#define SIM800C_THREAD_PRIORITY        (RT_THREAD_PRIORITY_MAX/2)
 
-/* AT+CSTT command default*/
-static char *CSTT_CHINA_MOBILE  = "AT+CSTT=\"CMNET\"";
-static char *CSTT_CHINA_UNICOM  = "AT+CSTT=\"UNINET\"";
-static char *CSTT_CHINA_TELECOM = "AT+CSTT=\"CTNET\"";
+#ifndef L610_DEEP_SLEEP_EN
+#define L610_DEEP_SLEEP_EN          0//module support  sleep mode
+#endif
 
-static void sim800c_power_on(struct at_device *device)
+#ifdef AT_DEVICE_USING_L610
+
+#define L610_WAIT_CONNECT_TIME      5000
+#define L610_THREAD_STACK_SIZE      2048+1024
+#define L610_THREAD_PRIORITY        (RT_THREAD_PRIORITY_MAX/2)
+
+
+
+static char *CSTT_CHINA_MOBILE  = "AT+MIPCALL=1,\"CMNET\"";
+static char *CSTT_CHINA_UNICOM  = "AT+MIPCALL=1,\"3GNET\"";
+static char *CSTT_CHINA_TELECOM = "AT+MIPCALL=1,\"CTNET\"";
+
+
+static int l610_power_on(struct at_device *device)
 {
-    struct at_device_sim800c *sim800c = RT_NULL;
+    struct at_device_l610 *l610= RT_NULL;
 
-    sim800c = (struct at_device_sim800c *) device->user_data;
+        l610 = (struct at_device_l610 *) device->user_data;
+        l610->power_status = RT_TRUE;
 
-    /* not nead to set pin configuration for m26 device power on */
-    if (sim800c->power_pin == -1 || sim800c->power_status_pin == -1)
+     /* not nead to set pin configuration for me3616 device power on */
+    if (l610->power_pin == -1)
     {
-        return;
+        return(RT_EOK);
     }
 
-    if (rt_pin_read(sim800c->power_status_pin) == PIN_HIGH)
-    {
-        return;
-    }
-    rt_pin_write(sim800c->power_pin, PIN_HIGH);
+    rt_pin_write(l610->power_pin, PIN_LOW);
+    rt_thread_mdelay(2000);
+    rt_pin_write(l610->power_pin, PIN_HIGH);
+    LOG_D("power on success.");
 
-    while (rt_pin_read(sim800c->power_status_pin) == PIN_LOW)
-    {
-        rt_thread_mdelay(10);
-    }
-    rt_pin_write(sim800c->power_pin, PIN_LOW);
+    return(RT_EOK);
 }
 
-static void sim800c_power_off(struct at_device *device)
+static int l610_power_off(struct at_device *device)
 {
-    struct at_device_sim800c *sim800c = RT_NULL;
+    struct at_device_l610 *l610 = RT_NULL;
 
-    sim800c = (struct at_device_sim800c *) device->user_data;
+    l610 = (struct at_device_l610 *) device->user_data;
 
     /* not nead to set pin configuration for m26 device power on */
-    if (sim800c->power_pin == -1 || sim800c->power_status_pin == -1)
+    if (l610->power_pin == -1)
     {
-        return;
+        return RT_EOK;
     }
 
-    if (rt_pin_read(sim800c->power_status_pin) == PIN_LOW)
-    {
-        return;
-    }
-    rt_pin_write(sim800c->power_pin, PIN_HIGH);
+    rt_pin_write(l610->power_pin, PIN_LOW);
+    rt_thread_mdelay(2000);
+    rt_pin_write(l610->power_pin, PIN_HIGH);
 
-    while (rt_pin_read(sim800c->power_status_pin) == PIN_HIGH)
-    {
-        rt_thread_mdelay(10);
-    }
-    rt_pin_write(sim800c->power_pin, PIN_LOW);
+        l610->power_status = RT_FALSE;
+        LOG_D("power off success.");
+        return(RT_EOK);
 }
 
-/* =============================  sim76xx network interface operations ============================= */
-
-/* set sim800c network interface device status and address information */
-static int sim800c_netdev_set_info(struct netdev *netdev)
+static int l610_sleep(struct at_device *device)
 {
-#define SIM800C_IMEI_RESP_SIZE      32
-#define SIM800C_IPADDR_RESP_SIZE    32
-#define SIM800C_DNS_RESP_SIZE       96
-#define SIM800C_INFO_RESP_TIMO      rt_tick_from_millisecond(300)
+    at_response_t resp = RT_NULL;
+    struct at_device_l610 *l610 = RT_NULL;
+
+    l610 = (struct at_device_l610 *)device->user_data;
+    if ( ! l610->power_status)//power off
+    {
+        return(RT_EOK);
+    }
+    if (l610->sleep_status)//is sleep status
+    {
+        return(RT_EOK);
+    }
+
+    resp = at_create_resp(64, 0, rt_tick_from_millisecond(300));
+    if (resp == RT_NULL)
+    {
+        LOG_E("no memory for resp create.");
+        return(-RT_ERROR);
+    }
+
+    if (at_obj_exec_cmd(device->client, resp, "AT+GTWAKE=1,2") != RT_EOK)
+    {
+        LOG_D("enable sleep fail.");
+        at_delete_resp(resp);
+        return(-RT_ERROR);
+    }
+
+   #if L610_DEEP_SLEEP_EN
+    if (at_obj_exec_cmd(device->client, resp, "ATS24=1") != RT_EOK)
+    {
+        LOG_D("startup entry into sleep fail.");
+        at_delete_resp(resp);
+        return(-RT_ERROR);
+    }
+    #endif
+    at_delete_resp(resp);
+    l610->sleep_status = RT_TRUE;
+
+    LOG_D("sleep success.");
+
+    return(RT_EOK);
+}
+
+
+static int l610_wakeup(struct at_device *device)
+{
+    at_response_t resp = RT_NULL;
+    struct at_device_l610 *l610 = RT_NULL;
+
+    l610 = (struct at_device_l610 *)device->user_data;
+    if ( ! l610->power_status)//power off
+    {
+        LOG_E("the power is off and the wake-up cannot be performed");
+        return(-RT_ERROR);
+    }
+    if ( ! l610->sleep_status)//no sleep status
+    {
+    return(RT_EOK);
+    }
+
+    resp = at_create_resp(64, 0, rt_tick_from_millisecond(300));
+    if (resp == RT_NULL)
+    {
+        LOG_E("no memory for resp create.");
+        return(-RT_ERROR);
+    }
+
+    #if L610_DEEP_SLEEP_EN
+    if (l610->power_pin != -1)
+    {
+        rt_pin_write(me3616->power_pin, PIN_HIGH);
+        rt_thread_mdelay(100);
+        rt_pin_write(me3616->power_pin, PIN_LOW);
+        rt_thread_mdelay(200);
+    }
+    #endif
+
+    if (at_obj_exec_cmd(device->client, resp, "AT+GTWAKE=0,2") != RT_EOK)
+    {
+        LOG_D("wake up fail.");
+        at_delete_resp(resp);
+        return(-RT_ERROR);
+    }
+
+    at_delete_resp(resp);
+    l610->sleep_status = RT_FALSE;
+
+    LOG_D("wake up success.");
+
+    return(RT_EOK);
+}
+
+
+
+static int l610_check_link_status(struct at_device *device)
+{
+    at_response_t resp = RT_NULL;
+    struct at_device_l610 *l610 = RT_NULL;
+    int result = -RT_ERROR;
+
+    RT_ASSERT(device);
+
+    l610 = (struct at_device_l610 *)device->user_data;
+    if ( ! l610->power_status)//power off
+    {
+        LOG_D("the power is off.");
+        return(-RT_ERROR);
+    }
+
+    #if L610_DEEP_SLEEP_EN
+    if (l610->sleep_status)//is sleep status
+    {
+        if (l610->power_pin != -1)
+        {
+            rt_pin_write(l610->power_pin, PIN_HIGH);
+            rt_thread_mdelay(100);
+            rt_pin_write(l610->power_pin, PIN_LOW);
+            rt_thread_mdelay(200);
+        }
+    }
+    #endif
+
+    resp = at_create_resp(64, 0, rt_tick_from_millisecond(300));
+    if (resp == RT_NULL)
+    {
+        LOG_E("no memory for resp create.");
+        return(-RT_ERROR);
+    }
+
+    result = -RT_ERROR;
+    if (at_obj_exec_cmd(device->client, resp, "AT+CGREG?") == RT_EOK)
+    {
+        int link_stat = 0;
+        if (at_resp_parse_line_args_by_kw(resp, "+CGREG:", "+CGREG: %*d,%d", &link_stat) > 0)
+        {
+            if (link_stat == 1 || link_stat == 5)
+            {
+                result = RT_EOK;
+            }
+        }
+    }
+
+    #if L610_DEEP_SLEEP_EN
+    if (l610->sleep_status)//is sleep status
+    {
+        if (at_obj_exec_cmd(device->client, resp, "ATS24=1") != RT_EOK)
+        {
+            LOG_D("startup entry into sleep fail.");
+        }
+    }
+    #endif
+
+    at_delete_resp(resp);
+
+    return(result);
+}
+
+
+
+/* =============================  l610 network interface operations ============================= */
+
+/* set l610 network interface device status and address information */
+static int l610_netdev_set_info(struct netdev *netdev)
+{
+#define L610_IMEI_RESP_SIZE      32
+#define L610_IPADDR_RESP_SIZE    32
+#define L610_DNS_RESP_SIZE       96
+#define L610_INFO_RESP_TIMO      rt_tick_from_millisecond(300)
 
     int result = RT_EOK;
     ip_addr_t addr;
@@ -117,13 +277,12 @@ static int sim800c_netdev_set_info(struct netdev *netdev)
         LOG_E("get device(%s) failed.");
         return -RT_ERROR;
     }
-
     /* set network interface device status */
     netdev_low_level_set_status(netdev, RT_TRUE);
     netdev_low_level_set_link_status(netdev, RT_TRUE);
     netdev_low_level_set_dhcp_status(netdev, RT_TRUE);
 
-    resp = at_create_resp(SIM800C_IMEI_RESP_SIZE, 0, SIM800C_INFO_RESP_TIMO);
+    resp = at_create_resp(L610_IMEI_RESP_SIZE, 0, L610_INFO_RESP_TIMO);
     if (resp == RT_NULL)
     {
         LOG_E("no memory for resp create.");
@@ -133,14 +292,14 @@ static int sim800c_netdev_set_info(struct netdev *netdev)
 
     /* set network interface device hardware address(IMEI) */
     {
-        #define SIM800C_NETDEV_HWADDR_LEN   8
-        #define SIM800C_IMEI_LEN            15
+        #define L610_NETDEV_HWADDR_LEN   8
+        #define L610_IMEI_LEN            15
 
-        char imei[SIM800C_IMEI_LEN] = {0};
+        char imei[L610_IMEI_LEN] = {0};
         int i = 0, j = 0;
 
         /* send "AT+GSN" commond to get device IMEI */
-        if (at_obj_exec_cmd(device->client, resp, "AT+GSN") < 0)
+        if (at_obj_exec_cmd(device->client, resp, "AT+CGSN") < 0)
         {
             result = -RT_ERROR;
             goto __exit;
@@ -153,13 +312,13 @@ static int sim800c_netdev_set_info(struct netdev *netdev)
             goto __exit;
         }
 
-        LOG_D("%s device IMEI number: %s", device->name, imei);
+        LOG_D("%s IMEI : %s", device->name, imei);
 
-        netdev->hwaddr_len = SIM800C_NETDEV_HWADDR_LEN;
+        netdev->hwaddr_len = L610_NETDEV_HWADDR_LEN;
         /* get hardware address by IMEI */
-        for (i = 0, j = 0; i < SIM800C_NETDEV_HWADDR_LEN && j < SIM800C_IMEI_LEN; i++, j += 2)
+        for (i = 0, j = 0; i < L610_NETDEV_HWADDR_LEN && j < L610_IMEI_LEN; i++, j += 2)
         {
-            if (j != SIM800C_IMEI_LEN - 1)
+            if (j != L610_IMEI_LEN - 1)
             {
                 netdev->hwaddr[i] = (imei[j] - '0') * 10 + (imei[j + 1] - '0');
             }
@@ -168,66 +327,32 @@ static int sim800c_netdev_set_info(struct netdev *netdev)
                 netdev->hwaddr[i] = (imei[j] - '0');
             }
         }
+
     }
 
-    /* set network interface device IP address */
+
+   /* set network interface device IP address */
     {
         #define IP_ADDR_SIZE_MAX    16
         char ipaddr[IP_ADDR_SIZE_MAX] = {0};
 
-        at_resp_set_info(resp, SIM800C_IPADDR_RESP_SIZE, 2, SIM800C_INFO_RESP_TIMO);
-
-        /* send "AT+CIFSR" commond to get IP address */
-        if (at_obj_exec_cmd(device->client, resp, "AT+CIFSR") < 0)
+        /* send "AT+CGPADDR=1" commond to get IP address */
+        if (at_obj_exec_cmd(device->client, resp, "AT+MIPCALL?") != RT_EOK)
         {
             result = -RT_ERROR;
             goto __exit;
         }
 
-        if (at_resp_parse_line_args_by_kw(resp, ".", "%s", ipaddr) <= 0)
+        /* parse response data "+MIPCALL: 1,<IP_address>" */
+        if (at_resp_parse_line_args_by_kw(resp, "+MIPCALL: ","%*[^,],%s",ipaddr) <= 0)
         {
-            LOG_E("%s device prase \"AT+CIFSR\" cmd error.", device->name);
+            LOG_E("%s device \"AT+MIPCALL?\" cmd error.", device->name);
             result = -RT_ERROR;
             goto __exit;
         }
-
-        LOG_D("%s device IP address: %s", device->name, ipaddr);
-
         /* set network interface address information */
         inet_aton(ipaddr, &addr);
         netdev_low_level_set_ipaddr(netdev, &addr);
-    }
-
-    /* set network interface device dns server */
-    {
-        #define DNS_ADDR_SIZE_MAX   16
-        char dns_server1[DNS_ADDR_SIZE_MAX] = {0}, dns_server2[DNS_ADDR_SIZE_MAX] = {0};
-
-        at_resp_set_info(resp, SIM800C_DNS_RESP_SIZE, 0, SIM800C_INFO_RESP_TIMO);
-
-        /* send "AT+CDNSCFG?" commond to get DNS servers address */
-        if (at_obj_exec_cmd(device->client, resp, "AT+CDNSCFG?") < 0)
-        {
-            result = -RT_ERROR;
-            goto __exit;
-        }
-
-        if (at_resp_parse_line_args_by_kw(resp, "PrimaryDns:", "PrimaryDns:%s", dns_server1) <= 0 ||
-            at_resp_parse_line_args_by_kw(resp, "SecondaryDns:", "SecondaryDns:%s", dns_server2) <= 0)
-        {
-            LOG_E("%s device prase \"AT+CDNSCFG?\" cmd error.", device->name);
-            result = -RT_ERROR;
-            goto __exit;
-        }
-
-        LOG_D("%s device primary DNS server address: %s", device->name, dns_server1);
-        LOG_D("%s device secondary DNS server address: %s", device->name, dns_server2);
-
-        inet_aton(dns_server1, &addr);
-        netdev_low_level_set_dns_server(netdev, 0, &addr);
-
-        inet_aton(dns_server2, &addr);
-        netdev_low_level_set_dns_server(netdev, 1, &addr);
     }
 
 __exit:
@@ -239,15 +364,12 @@ __exit:
     return result;
 }
 
-static void check_link_status_entry(void *parameter)
+static void l610_check_link_status_entry(void *parameter)
 {
-#define SIM800C_LINK_STATUS_OK   1
-#define SIM800C_LINK_RESP_SIZE   64
-#define SIM800C_LINK_RESP_TIMO   (3 * RT_TICK_PER_SECOND)
-#define SIM800C_LINK_DELAY_TIME  (30 * RT_TICK_PER_SECOND)
 
-    at_response_t resp = RT_NULL;
-    int result_code, link_status;
+#define L610_LINK_DELAY_TIME  (30 * RT_TICK_PER_SECOND)
+
+    rt_bool_t is_link_up;
     struct at_device *device = RT_NULL;
     struct netdev *netdev = (struct netdev *)parameter;
 
@@ -258,41 +380,21 @@ static void check_link_status_entry(void *parameter)
         return;
     }
 
-    resp = at_create_resp(SIM800C_LINK_RESP_SIZE, 0, SIM800C_LINK_RESP_TIMO);
-    if (resp == RT_NULL)
-    {
-        LOG_E("no memory for resp create.");
-        return;
-    }
-
     while (1)
     {
         /* send "AT+CGREG?" commond  to check netweork interface device link status */
-        if (at_obj_exec_cmd(device->client, resp, "AT+CGREG?") < 0)
-        {
-            rt_thread_mdelay(SIM800C_LINK_DELAY_TIME);
+        is_link_up = (l610_check_link_status(device) == RT_EOK);
 
-            continue;
-        }
-
-        link_status = -1;
-        at_resp_parse_line_args_by_kw(resp, "+CGREG:", "+CGREG: %d,%d", &result_code, &link_status);
-
-        /* check the network interface device link status  */
-        if ((SIM800C_LINK_STATUS_OK == link_status) != netdev_is_link_up(netdev))
-        {
-            netdev_low_level_set_link_status(netdev, (SIM800C_LINK_STATUS_OK == link_status));
-        }
-
-        rt_thread_mdelay(SIM800C_LINK_DELAY_TIME);
+        netdev_low_level_set_link_status(netdev, is_link_up);
+        rt_thread_mdelay(L610_LINK_DELAY_TIME);
     }
 }
 
-static int sim800c_netdev_check_link_status(struct netdev *netdev)
+static int l610_netdev_check_link_status(struct netdev *netdev)
 {
-#define SIM800C_LINK_THREAD_TICK           20
-#define SIM800C_LINK_THREAD_STACK_SIZE     (1024 + 512)
-#define SIM800C_LINK_THREAD_PRIORITY       (RT_THREAD_PRIORITY_MAX - 2)
+#define L610_LINK_THREAD_TICK           20
+#define L610_LINK_THREAD_STACK_SIZE     (1024 + 512)
+#define L610_LINK_THREAD_PRIORITY       (RT_THREAD_PRIORITY_MAX - 2)
 
     rt_thread_t tid;
     char tname[RT_NAME_MAX] = {0};
@@ -301,8 +403,8 @@ static int sim800c_netdev_check_link_status(struct netdev *netdev)
 
     rt_snprintf(tname, RT_NAME_MAX, "%s", netdev->name);
 
-    tid = rt_thread_create(tname, check_link_status_entry, (void *) netdev,
-            SIM800C_LINK_THREAD_STACK_SIZE, SIM800C_LINK_THREAD_PRIORITY, SIM800C_LINK_THREAD_TICK);
+    tid = rt_thread_create(tname, l610_check_link_status_entry, (void *) netdev,
+            L610_LINK_THREAD_STACK_SIZE, L610_LINK_THREAD_PRIORITY, L610_LINK_THREAD_TICK);
     if (tid)
     {
         rt_thread_startup(tid);
@@ -311,9 +413,9 @@ static int sim800c_netdev_check_link_status(struct netdev *netdev)
     return RT_EOK;
 }
 
-static int sim800c_net_init(struct at_device *device);
+static int l610_net_init(struct at_device *device);
 
-static int sim800c_netdev_set_up(struct netdev *netdev)
+static int l610_netdev_set_up(struct netdev *netdev)
 {
     struct at_device *device = RT_NULL;
 
@@ -326,7 +428,7 @@ static int sim800c_netdev_set_up(struct netdev *netdev)
 
     if (device->is_init == RT_FALSE)
     {
-        sim800c_net_init(device);
+        l610_net_init(device);
         device->is_init = RT_TRUE;
 
         netdev_low_level_set_status(netdev, RT_TRUE);
@@ -336,7 +438,7 @@ static int sim800c_netdev_set_up(struct netdev *netdev)
     return RT_EOK;
 }
 
-static int sim800c_netdev_set_down(struct netdev *netdev)
+static int l610_netdev_set_down(struct netdev *netdev)
 {
     struct at_device *device = RT_NULL;
 
@@ -349,7 +451,7 @@ static int sim800c_netdev_set_down(struct netdev *netdev)
 
     if (device->is_init == RT_TRUE)
     {
-        sim800c_power_off(device);
+        l610_power_off(device);
         device->is_init = RT_FALSE;
 
         netdev_low_level_set_status(netdev, RT_FALSE);
@@ -359,55 +461,10 @@ static int sim800c_netdev_set_down(struct netdev *netdev)
     return RT_EOK;
 }
 
-static int sim800c_netdev_set_dns_server(struct netdev *netdev, uint8_t dns_num, ip_addr_t *dns_server)
-{
-#define SIM800C_DNS_RESP_LEN     8
-#define SIM800C_DNS_RESP_TIMEO   rt_tick_from_millisecond(300)
-
-    int result = RT_EOK;
-    at_response_t resp = RT_NULL;
-    struct at_device *device = RT_NULL;
-
-    RT_ASSERT(netdev);
-    RT_ASSERT(dns_server);
-
-    device = at_device_get_by_name(AT_DEVICE_NAMETYPE_NETDEV, netdev->name);
-    if (device == RT_NULL)
-    {
-        LOG_E("get device(%s) failed.", netdev->name);
-        return -RT_ERROR;
-    }
-
-    resp = at_create_resp(SIM800C_DNS_RESP_LEN, 0, SIM800C_DNS_RESP_TIMEO);
-    if (resp == RT_NULL)
-    {
-        LOG_D("no memory for resp create.");
-        result = -RT_ENOMEM;
-        goto __exit;
-    }
-
-    /* send "AT+CDNSCFG=<pri_dns>[,<sec_dns>]" commond to set dns servers */
-    if (at_obj_exec_cmd(device->client, resp, "AT+CDNSCFG=\"%s\"", inet_ntoa(*dns_server)) < 0)
-    {
-        result = -RT_ERROR;
-        goto __exit;
-    }
-
-    netdev_low_level_set_dns_server(netdev, dns_num, dns_server);
-
-__exit:
-    if (resp)
-    {
-        at_delete_resp(resp);
-    }
-
-    return result;
-}
-
-static int sim800c_ping_domain_resolve(struct at_device *device, const char *name, char ip[16])
+static int l610_ping_domain_resolve(struct at_device *device, const char *name, char ip[16])
 {
     int result = RT_EOK;
-    char recv_ip[16] = { 0 };
+    char recv_ipv4[16] = { 0 };
     at_response_t resp = RT_NULL;
 
     /* The maximum response time is 14 seconds, affected by network status */
@@ -418,27 +475,39 @@ static int sim800c_ping_domain_resolve(struct at_device *device, const char *nam
         return -RT_ENOMEM;
     }
 
-    if (at_obj_exec_cmd(device->client, resp, "AT+CDNSGIP=\"%s\"", name) < 0)
+    //0: IPV4 address
+    //1: IPV6 address
+    //2: IPV4/IPV6 address
+    //<IP>: resolved IPV4 or IPV6 address (string without double quotes)
+    result = at_obj_exec_cmd(device->client, resp, "AT+MIPDNS=\"%s\",0", name);
+    if (result != RT_EOK)
     {
-        result = -RT_ERROR;
+        LOG_E("%s device \"AT+MIPDNS=\"%s\"\" cmd error.", device->name, name);
         goto __exit;
     }
 
     /* parse the third line of response data, get the IP address */
-    if (at_resp_parse_line_args_by_kw(resp, "+CDNSGIP:", "%*[^,],%*[^,],\"%[^\"]", recv_ip) < 0)
+    if (at_resp_parse_line_args_by_kw(resp, "+MIPDNS: ", "%*[^,],%s", recv_ipv4) <= 0)
     {
-        rt_thread_mdelay(100);
-        /* resolve failed, maybe receive an URC CRLF */
+        LOG_E("%s device prase \"AT+MIPDNS=\"%s\",2\" cmd error.", device->name, name);
+        result = -RT_ERROR;
+        goto __exit;
     }
 
-    if (rt_strlen(recv_ip) < 8)
+      if (at_resp_get_line_by_kw(resp, "OK")==0)
+    {
+        LOG_E("l610_ping_domain_resolve fail");
+        result = -RT_ERROR;
+        goto __exit;
+    }
+    if (rt_strlen(recv_ipv4) < 8)
     {
         rt_thread_mdelay(100);
         /* resolve failed, maybe receive an URC CRLF */
     }
     else
     {
-        rt_strncpy(ip, recv_ip, 15);
+        rt_strncpy(ip, recv_ipv4, 15);
         ip[15] = '\0';
     }
 
@@ -452,19 +521,18 @@ __exit:
 }
 
 #ifdef NETDEV_USING_PING
-static int sim800c_netdev_ping(struct netdev *netdev, const char *host,
+static int l610_netdev_ping(struct netdev *netdev, const char *host,
         size_t data_len, uint32_t timeout, struct netdev_ping_resp *ping_resp)
 {
-#define SIM800C_PING_RESP_SIZE         128
-#define SIM800C_PING_IP_SIZE           16
-#define SIM800C_PING_TIMEO             (5 * RT_TICK_PER_SECOND)
+#define L610_PING_RESP_SIZE         128
+#define L610_PING_IP_SIZE           16
+#define L610_PING_TIMEO             (5 * RT_TICK_PER_SECOND)
 
-#define SIM800C_PING_ERR_TIME          600
-#define SIM800C_PING_ERR_TTL           255
+#define L610_PING_ERR_TIME          L610_PING_TIMEO
 
     int result = RT_EOK;
-    int response, time, ttl, i, err_code = 0;
-    char ip_addr[SIM800C_PING_IP_SIZE] = {0};
+    int time, ttl=64,i,type, err_code = 0;
+    char ip_addr[L610_PING_IP_SIZE] = {0};
     at_response_t resp = RT_NULL;
     struct at_device *device = RT_NULL;
 
@@ -475,7 +543,7 @@ static int sim800c_netdev_ping(struct netdev *netdev, const char *host,
     device = at_device_get_by_name(AT_DEVICE_NAMETYPE_NETDEV, netdev->name);
     if (device == RT_NULL)
     {
-        LOG_E("get device(%s) failed.", netdev->name);
+        LOG_D("get device(%s) failed.", netdev->name);
         return -RT_ERROR;
     }
 
@@ -484,58 +552,55 @@ static int sim800c_netdev_ping(struct netdev *netdev, const char *host,
     if (i < strlen(host))
     {
         /* check domain name is usable */
-        if (sim800c_ping_domain_resolve(device, host, ip_addr) < 0)
+        if (l610_ping_domain_resolve(device, host, ip_addr) < 0)
         {
+            LOG_E("l610_ping_domain_resolve error");
             return -RT_ERROR;
         }
-        rt_memset(ip_addr, 0x00, SIM800C_PING_IP_SIZE);
+        rt_memset(ip_addr, 0x00, L610_PING_IP_SIZE);
     }
 
-    resp = at_create_resp(SIM800C_PING_RESP_SIZE, 0, SIM800C_PING_TIMEO);
+    resp = at_create_resp(L610_PING_RESP_SIZE,6, L610_PING_TIMEO);
     if (resp == RT_NULL)
     {
         LOG_E("no memory for resp create.");
-        result = -RT_ERROR;
-        goto __exit;
+        return -RT_ENOMEM;
+
     }
 
-    /* domain name prase error options */
-    if (at_resp_parse_line_args_by_kw(resp, "+CDNSGIP: 0", "+CDNSGIP: 0,%d", &err_code) > 0)
-    {
-        /* 3 - network error, 8 - dns common error */
-        if (err_code == 3 || err_code == 8)
-        {
-            result = -RT_ERROR;
-            goto __exit;
-        }
-    }
-
-    /* send "AT+CIPPING=<IP addr>[,<retryNum>[,<dataLen>[,<timeout>[,<ttl>]]]]" commond to send ping request */
-    if (at_obj_exec_cmd(device->client, resp, "AT+CIPPING=%s,1,%d,%d,64",
-            host, data_len, SIM800C_PING_TIMEO / (RT_TICK_PER_SECOND / 10)) < 0)
+   // +MPING=<mode>[,<Destination_IP/hostname>[,<count>[,<size>[,<TTL>[,<TOS>[,<TimeOut>]]]]]]
+    if (at_obj_exec_cmd(device->client, resp, "AT+MPING=1,\"%s\",1,%d,%d,0,%d", host,data_len,ttl,L610_PING_TIMEO) != RT_EOK)
     {
         result = -RT_ERROR;
         goto __exit;
     }
 
-    if (at_resp_parse_line_args_by_kw(resp, "+CIPPING:", "+CIPPING:%d,\"%[^\"]\",%d,%d",
-             &response, ip_addr, &time, &ttl) <= 0)
+    if (at_resp_get_line_by_kw(resp, "OK")==0)
     {
+        LOG_E("ping AT send fail");
         result = -RT_ERROR;
         goto __exit;
     }
 
-    /* the ping request timeout expires, the response time settting to 600 and ttl setting to 255 */
-    if (time == SIM800C_PING_ERR_TIME && ttl == SIM800C_PING_ERR_TTL)
+    //+MPING: <Destination_IP>,<type>,<code> [,<RTT>]
+    if (at_resp_parse_line_args_by_kw(resp, "+MPING: ","+MPING: \"%[^\"]\",%d,%d,%d\r\n",
+             ip_addr,&type,&err_code,&time)<= 0)
+    {
+        LOG_E("+MPING error ");
+        result = -RT_ERROR;
+        goto __exit;
+    }
+
+    /* the ping request timeout expires*/
+    if (time>=L610_PING_ERR_TIME)
     {
         result = -RT_ETIMEOUT;
         goto __exit;
     }
-
     inet_aton(ip_addr, &(ping_resp->ip_addr));
     ping_resp->data_len = data_len;
-    /* reply time, in units of 100 ms */
-    ping_resp->ticks = time * 100;
+    /* reply time, in units of ms */
+    ping_resp->ticks = time ;
     ping_resp->ttl = ttl;
 
  __exit:
@@ -548,24 +613,25 @@ static int sim800c_netdev_ping(struct netdev *netdev, const char *host,
 }
 #endif /* NETDEV_USING_PING */
 
-const struct netdev_ops sim800c_netdev_ops =
+const struct netdev_ops l610_netdev_ops =
 {
-    sim800c_netdev_set_up,
-    sim800c_netdev_set_down,
+    l610_netdev_set_up,
+    l610_netdev_set_down,
 
     RT_NULL, /* not support set ip, netmask, gatway address */
-    sim800c_netdev_set_dns_server,
+    RT_NULL,
     RT_NULL, /* not support set DHCP status */
 
 #ifdef NETDEV_USING_PING
-    sim800c_netdev_ping,
+    l610_netdev_ping,
 #endif
     RT_NULL,
 };
 
-static struct netdev *sim800c_netdev_add(const char *netdev_name)
+static struct netdev *l610_netdev_add(const char *netdev_name)
 {
-#define SIM800C_NETDEV_MTU       1500
+#define L610_NETDEV_MTU     1500
+#define HWADDR_LEN          8
     struct netdev *netdev = RT_NULL;
 
     RT_ASSERT(netdev_name);
@@ -583,8 +649,9 @@ static struct netdev *sim800c_netdev_add(const char *netdev_name)
         return RT_NULL;
     }
 
-    netdev->mtu = SIM800C_NETDEV_MTU;
-    netdev->ops = &sim800c_netdev_ops;
+    netdev->mtu = L610_NETDEV_MTU;
+    netdev->ops = &l610_netdev_ops;
+        netdev->hwaddr_len = HWADDR_LEN;
 
 #ifdef SAL_USING_AT
     extern int sal_at_netdev_set_pf_info(struct netdev *netdev);
@@ -609,14 +676,18 @@ static struct netdev *sim800c_netdev_add(const char *netdev_name)
         }                                                                                          \
     } while(0)                                                                                     \
 
-/* init for sim800c */
-static void sim800c_init_thread_entry(void *parameter)
+/* init for l610 */
+
+
+
+
+static void l610_init_thread_entry(void *parameter)
 {
-#define INIT_RETRY                     5
-#define CPIN_RETRY                     10
-#define CSQ_RETRY                      10
-#define CREG_RETRY                     10
-#define CGREG_RETRY                    20
+#define INIT_RETRY                      5
+#define CPIN_RETRY                      10
+#define CSQ_RETRY                       10
+#define CREG_RETRY                      10
+#define CGREG_RETRY                     20
 
     int i, qimux, retry_num = INIT_RETRY;
     char parsed_data[32] = {0};
@@ -625,6 +696,7 @@ static void sim800c_init_thread_entry(void *parameter)
     struct at_device *device = (struct at_device *)parameter;
     struct at_client *client = device->client;
 
+
     resp = at_create_resp(128, 0, rt_tick_from_millisecond(300));
     if (resp == RT_NULL)
     {
@@ -632,17 +704,16 @@ static void sim800c_init_thread_entry(void *parameter)
         return;
     }
 
-    LOG_D("start init %s device", device->name);
-
     while (retry_num--)
     {
         rt_memset(parsed_data, 0, sizeof(parsed_data));
         rt_thread_mdelay(500);
-        sim800c_power_on(device);
+        l610_power_on(device);
+
         rt_thread_mdelay(1000);
 
-        /* wait sim800c startup finish */
-        if (at_client_obj_wait_connect(client, SIM800C_WAIT_CONNECT_TIME))
+        /* wait l610 startup finish */
+        if (at_client_obj_wait_connect(client, L610_WAIT_CONNECT_TIME))
         {
             result = -RT_ETIMEOUT;
             goto __exit;
@@ -660,8 +731,7 @@ static void sim800c_init_thread_entry(void *parameter)
         /* check SIM card */
         for (i = 0; i < CPIN_RETRY; i++)
         {
-            AT_SEND_CMD(client, resp, 2, 5 * RT_TICK_PER_SECOND, "AT+CPIN?");
-
+          AT_SEND_CMD(client, resp, 2, 5 * RT_TICK_PER_SECOND, "AT+CPIN?");
             if (at_resp_get_line_by_kw(resp, "READY"))
             {
                 LOG_D("%s device SIM card detection success.", device->name);
@@ -682,10 +752,12 @@ static void sim800c_init_thread_entry(void *parameter)
         for (i = 0; i < CREG_RETRY; i++)
         {
             AT_SEND_CMD(client, resp, 0, 300, "AT+CREG?");
+
             at_resp_parse_line_args_by_kw(resp, "+CREG:", "+CREG: %s", &parsed_data);
             if (!strncmp(parsed_data, "0,1", sizeof(parsed_data)) ||
                 !strncmp(parsed_data, "0,5", sizeof(parsed_data)))
             {
+
                 LOG_D("%s device GSM is registered(%s),", device->name, parsed_data);
                 break;
             }
@@ -701,6 +773,7 @@ static void sim800c_init_thread_entry(void *parameter)
         for (i = 0; i < CGREG_RETRY; i++)
         {
             AT_SEND_CMD(client, resp, 0, 300, "AT+CGREG?");
+
             at_resp_parse_line_args_by_kw(resp, "+CGREG:", "+CGREG: %s", &parsed_data);
             if (!strncmp(parsed_data, "0,1", sizeof(parsed_data)) ||
                 !strncmp(parsed_data, "0,5", sizeof(parsed_data)))
@@ -720,7 +793,7 @@ static void sim800c_init_thread_entry(void *parameter)
         /* check signal strength */
         for (i = 0; i < CSQ_RETRY; i++)
         {
-            AT_SEND_CMD(client, resp, 0, 300, "AT+CSQ");
+            AT_SEND_CMD(client, resp, 0, 300, "AT+CSQ?");
             at_resp_parse_line_args_by_kw(resp, "+CSQ:", "+CSQ: %s", &parsed_data);
             if (strncmp(parsed_data, "99,99", sizeof(parsed_data)))
             {
@@ -736,24 +809,31 @@ static void sim800c_init_thread_entry(void *parameter)
             goto __exit;
         }
 
-        /* the device default response timeout is 40 seconds, but it set to 15 seconds is convenient to use. */
-        AT_SEND_CMD(client, resp, 2, 20 * 1000, "AT+CIPSHUT");
+// 0: Received data with "+MIPRTCP:" or "+MIPRUDP:" and the data is encoded.
+// 1: Received data only and the data are without encoded. In received character string, Module doesn’t accede to any <CR><LF> symbol.
+// 2: Received data with "+MIPRTCP:" or "+MIPRUDP:" and the data is without encoded. In received character string, Module will accede to <CR><LF> before "+MIPRTCP:" or "+MIPRUDP:".
+// 5: Data read mode.
+        /* */
+        AT_SEND_CMD(client, resp, 2, 5 * 1000, "AT+GTSET=\"IPRFMT\",5");
+        rt_thread_mdelay(100);
 
         /* Set to multiple connections */
-        AT_SEND_CMD(client, resp, 0, 300, "AT+CIPMUX?");
-        at_resp_parse_line_args_by_kw(resp, "+CIPMUX:", "+CIPMUX: %d", &qimux);
+        AT_SEND_CMD(client, resp, 0, 300, "AT+MIPCALL?");
+
+
+        at_resp_parse_line_args_by_kw(resp, "+MIPCALL:", "+MIPCALL: %d", &qimux);
+
         if (qimux == 0)
         {
-            AT_SEND_CMD(client, resp, 0, 300, "AT+CIPMUX=1");
-        }
-
         AT_SEND_CMD(client, resp, 0, 300, "AT+COPS?");
         at_resp_parse_line_args_by_kw(resp, "+COPS:", "+COPS: %*[^\"]\"%[^\"]", &parsed_data);
+
         if (rt_strcmp(parsed_data, "CHINA MOBILE") == 0)
         {
             /* "CMCC" */
             LOG_I("%s device network operator: %s", device->name, parsed_data);
             AT_SEND_CMD(client, resp, 0, 300, CSTT_CHINA_MOBILE);
+
         }
         else if (rt_strcmp(parsed_data, "CHN-UNICOM") == 0)
         {
@@ -768,13 +848,24 @@ static void sim800c_init_thread_entry(void *parameter)
             LOG_I("%s device network operator: %s", device->name, parsed_data);
         }
 
-        /* the device default response timeout is 150 seconds, but it set to 20 seconds is convenient to use. */
-        AT_SEND_CMD(client, resp, 0, 20 * 1000, "AT+CIICR");
-
-        AT_SEND_CMD(client, resp, 2, 300, "AT+CIFSR");
-        if (at_resp_get_line_by_kw(resp, "ERROR") != RT_NULL)
+            }
+  /* check the GPRS network is registered */
+        for (i = 0; i < CGREG_RETRY; i++)
         {
-            LOG_E("%s device get the local address failed.", device->name);
+            AT_SEND_CMD(client, resp, 0, 300, "AT+MIPCALL?");
+
+            at_resp_parse_line_args_by_kw(resp, "+MIPCALL: ", "+MIPCALL: %s", &parsed_data);
+
+            if(parsed_data!=NULL)
+            {
+                LOG_D("%s device GPRS is registered(%s).", device->name, parsed_data);
+                break;
+            }
+            rt_thread_mdelay(1000);
+        }
+        if (i == CGREG_RETRY)
+        {
+            LOG_E("%s device GPRS is register failed(%s).", device->name, parsed_data);
             result = -RT_ERROR;
             goto __exit;
         }
@@ -786,8 +877,8 @@ static void sim800c_init_thread_entry(void *parameter)
     __exit:
         if (result != RT_EOK)
         {
-            /* power off the sim800c device */
-            sim800c_power_off(device);
+            /* power off the L610 device */
+            l610_power_off(device);
             rt_thread_mdelay(1000);
 
             LOG_I("%s device initialize retry...", device->name);
@@ -802,11 +893,11 @@ static void sim800c_init_thread_entry(void *parameter)
     if (result == RT_EOK)
     {
         /* set network interface device status and address information */
-        sim800c_netdev_set_info(device->netdev);
+        l610_netdev_set_info(device->netdev);
         /* check and create link staus sync thread  */
         if (rt_thread_find(device->netdev->name) == RT_NULL)
         {
-            sim800c_netdev_check_link_status(device->netdev);
+            l610_netdev_check_link_status(device->netdev);
         }
 
         LOG_I("%s device network initialize success!", device->name);
@@ -818,13 +909,13 @@ static void sim800c_init_thread_entry(void *parameter)
     }
 }
 
-static int sim800c_net_init(struct at_device *device)
+static int l610_net_init(struct at_device *device)
 {
-#ifdef AT_DEVICE_SIM800C_INIT_ASYN
+#ifdef AT_DEVICE_L610_INIT_ASYN
     rt_thread_t tid;
 
-    tid = rt_thread_create("sim800c_net", sim800c_init_thread_entry, (void *)device,
-                SIM800C_THREAD_STACK_SIZE, SIM800C_THREAD_PRIORITY, 20);
+    tid = rt_thread_create("l610_net", l610_init_thread_entry, (void *)device,
+                L610_THREAD_STACK_SIZE, L610_THREAD_PRIORITY, 20);
     if (tid)
     {
         rt_thread_startup(tid);
@@ -835,8 +926,8 @@ static int sim800c_net_init(struct at_device *device)
         return -RT_ERROR;
     }
 #else
-    sim800c_init_thread_entry(device);
-#endif /* AT_DEVICE_SIM800C_INIT_ASYN */
+    L610_init_thread_entry(device);
+#endif /* AT_DEVICE_L610_INIT_ASYN */
 
     return RT_EOK;
 }
@@ -848,23 +939,23 @@ static void urc_func(struct at_client *client, const char *data, rt_size_t size)
     LOG_I("URC data : %.*s", size, data);
 }
 
-/* sim800c device URC table for the device control */
+/* l610 device URC table for the device control */
 static const struct at_urc urc_table[] =
 {
-        {"RDY",         "\r\n",                 urc_func},
+        {"RDY",         "\r\n",             urc_func},
 };
 
-static int sim800c_init(struct at_device *device)
+static int l610_init(struct at_device *device)
 {
-    struct at_device_sim800c *sim800c = (struct at_device_sim800c *) device->user_data;
+    struct at_device_l610 *l610 = (struct at_device_l610 *) device->user_data;
 
     /* initialize AT client */
-    at_client_init(sim800c->client_name, sim800c->recv_line_num);
+    at_client_init(l610->client_name, l610->recv_line_num);
 
-    device->client = at_client_get(sim800c->client_name);
+    device->client = at_client_get(l610->client_name);
     if (device->client == RT_NULL)
     {
-        LOG_E("get AT client(%s) failed.", sim800c->client_name);
+        LOG_E("get AT client(%s) failed.", l610->client_name);
         return -RT_ERROR;
     }
 
@@ -872,34 +963,35 @@ static int sim800c_init(struct at_device *device)
     at_obj_set_urc_table(device->client, urc_table, sizeof(urc_table) / sizeof(urc_table[0]));
 
 #ifdef AT_USING_SOCKET
-    sim800c_socket_init(device);
+
+    l610_socket_init(device);
 #endif
 
-    /* add sim800c device to the netdev list */
-    device->netdev = sim800c_netdev_add(sim800c->device_name);
+    /* add l610 device to the netdev list */
+    device->netdev = l610_netdev_add(l610->device_name);
     if (device->netdev == RT_NULL)
     {
-        LOG_E("get netdev(%s) failed.", sim800c->device_name);
+        LOG_E("get netdev(%s) failed.", l610->device_name);
         return -RT_ERROR;
     }
 
-    /* initialize sim800c pin configuration */
-    if (sim800c->power_pin != -1 && sim800c->power_status_pin != -1)
+    /* initialize l610 pin configuration */
+    if (l610->power_pin != -1 && l610->power_status_pin != -1)
     {
-        rt_pin_mode(sim800c->power_pin, PIN_MODE_OUTPUT);
-        rt_pin_mode(sim800c->power_status_pin, PIN_MODE_INPUT);
+        rt_pin_mode(l610->power_pin, PIN_MODE_OUTPUT);
+        rt_pin_mode(l610->power_status_pin, PIN_MODE_INPUT);
     }
 
-    /* initialize sim800c device network */
-    return sim800c_netdev_set_up(device->netdev);
+    /* initialize l610 device network */
+    return l610_netdev_set_up(device->netdev);
 }
 
-static int sim800c_deinit(struct at_device *device)
+static int l610_deinit(struct at_device *device)
 {
-    return sim800c_netdev_set_down(device->netdev);
+    return l610_netdev_set_down(device->netdev);
 }
 
-static int sim800c_control(struct at_device *device, int cmd, void *arg)
+static int l610_control(struct at_device *device, int cmd, void *arg)
 {
     int result = -RT_ERROR;
 
@@ -907,12 +999,17 @@ static int sim800c_control(struct at_device *device, int cmd, void *arg)
 
     switch (cmd)
     {
+    case AT_DEVICE_CTRL_SLEEP:
+        result = l610_sleep(device);
+        break;
+    case AT_DEVICE_CTRL_WAKEUP:
+        result = l610_wakeup(device);
+        break;
+
     case AT_DEVICE_CTRL_POWER_ON:
     case AT_DEVICE_CTRL_POWER_OFF:
     case AT_DEVICE_CTRL_RESET:
     case AT_DEVICE_CTRL_LOW_POWER:
-    case AT_DEVICE_CTRL_SLEEP:
-    case AT_DEVICE_CTRL_WAKEUP:
     case AT_DEVICE_CTRL_NET_CONN:
     case AT_DEVICE_CTRL_NET_DISCONN:
     case AT_DEVICE_CTRL_SET_WIFI_INFO:
@@ -929,14 +1026,14 @@ static int sim800c_control(struct at_device *device, int cmd, void *arg)
     return result;
 }
 
-const struct at_device_ops sim800c_device_ops =
+const struct at_device_ops l610_device_ops =
 {
-    sim800c_init,
-    sim800c_deinit,
-    sim800c_control,
+    l610_init,
+    l610_deinit,
+    l610_control,
 };
 
-static int sim800c_device_class_register(void)
+static int l610_device_class_register(void)
 {
     struct at_device_class *class = RT_NULL;
 
@@ -947,14 +1044,14 @@ static int sim800c_device_class_register(void)
         return -RT_ENOMEM;
     }
 
-    /* fill sim800c device class object */
+    /* fill l610 device class object */
 #ifdef AT_USING_SOCKET
-    sim800c_socket_class_register(class);
+    l610_socket_class_register(class);
 #endif
-    class->device_ops = &sim800c_device_ops;
+    class->device_ops = &l610_device_ops;
 
-    return at_device_class_register(class, AT_DEVICE_CLASS_SIM800C);
+    return at_device_class_register(class, AT_DEVICE_CLASS_L610);
 }
-INIT_DEVICE_EXPORT(sim800c_device_class_register);
+INIT_DEVICE_EXPORT(l610_device_class_register);
 
-#endif /* AT_DEVICE_USING_SIM800C */
+#endif /* AT_DEVICE_USING_L610 */

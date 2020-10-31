@@ -3,7 +3,7 @@
 ## 1. 简介 ##
 
 
-AT device 软件包是由 RT-Thread AT 组件针对不同 AT 设备的移植文件和示例代码组成，目前支持的 AT 设备有：ESP8266、ESP32、M26、MC20、RW007、MW31、SIM800C、W60X 、SIM76XX、A9/A9G、BC26 、AIR720、ME3616、M6315、BC28、EC200X、M5311系列设备等，目前上述设备都完成对 `AT socket` 功能的移植，及设备通过 AT 命令实现标准 socket 编程接口，完成 socket 通讯的功能，具体功能介绍可参考 [《RT-Thread 编程指南》](https://www.rt-thread.org/document/site/programming-manual/at/at/)AT 命令章节 。 
+AT device 软件包是由 RT-Thread AT 组件针对不同 AT 设备的移植文件和示例代码组成，目前支持的 AT 设备有：ESP8266、ESP32、M26、MC20、RW007、MW31、SIM800C、W60X 、SIM76XX、A9/A9G、BC26 、AIR720、ME3616、M6315、BC28、EC200X、M5311、L610系列设备等，目前上述设备都完成对 `AT socket` 功能的移植，及设备通过 AT 命令实现标准 socket 编程接口，完成 socket 通讯的功能，具体功能介绍可参考 [《RT-Thread 编程指南》](https://www.rt-thread.org/document/site/programming-manual/at/at/)AT 命令章节 。 
 
 ### 1.1. 目录结构 ###
 
@@ -32,6 +32,7 @@ AT device 软件包是由 RT-Thread AT 组件针对不同 AT 设备的移植文�
 | class/n21 | N21 设备针对 AT 组件的移植目录，实现 AT Socket 功能 |
 | class/n58 | N58 设备针对 AT 组件的移植目录，实现 AT Socket 功能 |
 | class/m5311 | M5311 设备针对 AT 组件的移植目录，实现 AT Socket 功能 |
+| class/l610 | L610 设备针对 AT 组件的移植目录，实现 AT Socket 功能 |
 ### 1.2 许可证 ###
 
 at_device package 遵循 LGPLv2.1 许可，详见 `LICENSE` 文件。
@@ -57,7 +58,7 @@ AT device 软件包目前已经发布多个版本，各个版本之间选项配�
 - **V1.5.0**：适用于 RT-Thread 版本小于 V3.1.3 或等于 V4.0.0， AT 组件版本等于 V1.2.0；
 - **V1.6.0**：适用于 RT-Thread 版本等于 V3.1.3 或等于 V4.0.1， AT 组件版本等于 V1.2.0；
 - **V2.0.0/V2.0.1**：适用于 RT-Thread 版本大于 V4.0.1 或者大于 3.1.3， AT 组件版本等于 V1.3.0；
-- **laster**：只适用于 RT-Thread 版本大于 V4.0.1 或者大于 3.1.3， AT 组件版本等于 V1.3.0；
+- **latest**：只适用于 RT-Thread 版本大于 V4.0.1 或者大于 3.1.3， AT 组件版本等于 V1.3.0；
 
 >  上述 版本判断在 menuconfig 中自动完成，at_device 软件包选择版本时会根据当前系统环境给出最佳版本支持，这里版本介绍作为运行环境参考。
 
@@ -78,7 +79,7 @@ AT device 软件包目前已经发布多个版本，各个版本之间选项配�
 - **AT socket device modules**: AT 设备选择，目前支持 RW007、ESP8266、M26/MC20、EC20、SIM800C、SIM76XX、A9/A9G、BC26 、air720、ME3616、M6315、BC28、EC200X、M5311等设备；
 - **Version**: 下载软件包版本；
 
-**V2.X.X (laster) 版本配置选项介绍**
+**V2.X.X (latest) 版本配置选项介绍**
 
 开启 AT device 软件包，该版本支持**同时开启多种 AT 设备**配置选项具体如下所示：
 
@@ -188,7 +189,7 @@ RT-Thread Components  --->
 
 - AT device 软件包适配的模块暂时不支持作为 TCP Server 完成服务器相关操作（如 accept 等）；
 - AT device 软件包默认设备类型为未选择，使用时需要指定使用设备型号；
-- `laster` 版本支持多个选中多个 AT 设备接入实现 AT Socket 功能，`V1.X.X` 版本只支持单个 AT 设备接入。
+- `latest` 版本支持多个选中多个 AT 设备接入实现 AT Socket 功能，`V1.X.X` 版本只支持单个 AT 设备接入。
 - AT device 软件包目前多个版本主要用于适配 AT 组件和系统的改动，推荐使用最新版本  RT-Thread 系统，并在 menuconfig 选项中选择 `latest` 版本；
 - 请参考 `at_sample_xxx.c` 中说明，部分功能需要增加`AT_CMD_MAX_LEN`、`RT_SERIAL_RB_BUFSZ`设定值大小。
 
