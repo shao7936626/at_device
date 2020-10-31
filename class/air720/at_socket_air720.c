@@ -604,6 +604,28 @@ static void urc_recv_func(struct at_client *client, const char *data, rt_size_t 
     }
 }
 
+static void urc_sim_removed_func(struct at_client *client, const char *data, rt_size_t size)
+{
+ 
+    RT_ASSERT(data && size);
+
+    int device_socket = 0;
+    rt_size_t bfsz = 0;
+    struct at_device *device = RT_NULL;
+    char *client_name = client->device->parent.name;
+
+    RT_ASSERT(data && size);
+
+    device = at_device_get_by_name(AT_DEVICE_NAMETYPE_CLIENT, client_name);
+    if (device == RT_NULL)
+    {
+        LOG_E("get air720 device by client name(%s) failed.", client_name);
+        return;
+    }
+	device->class->device_ops->control(device,AT_DEVICE_CTRL_REBOOT,RT_NULL);
+
+}
+
 static void urc_dataaccept_func(struct at_client *client, const char *data, rt_size_t size)
 {
 
@@ -642,6 +664,7 @@ static const struct at_urc urc_table[] =
         {"ECEIVE,", "\r\n", urc_recv_func},
         {"+RECEIVE,", "\r\n", urc_recv_func},
         {"DATA ACCEPT:", "\r\n", urc_dataaccept_func},
+		{"+CPIN: SIM REMOVED", "\r\n", urc_sim_removed_func},
 };
 
 static const struct at_socket_ops air720_socket_ops =
